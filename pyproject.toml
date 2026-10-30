@@ -1,0 +1,40 @@
+[project]
+name = "js-recon"
+version = "0.1.0"
+description = "Recon de archivos JavaScript: endpoints y secretos con pre-filtro regex y análisis opcional con Claude"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=2.3.0",
+    "python-dotenv>=1.2.4",
+    "requests>=2.34.2",
+]
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.170.14",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+]
+
+# Aplicación, no librería: uv no intenta construir/instalar un paquete,
+# solo gestiona el entorno virtual con las dependencias.
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+# Permite que los tests hagan "from core.extractor import ..." desde la raíz.
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# E/F/W: errores básicos · I: orden de imports · B: bugs comunes
+# UP: sintaxis moderna · S: reglas de seguridad (bandit) · SIM: simplificaciones
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# En tests "assert" es lo normal (S101).
+"tests/*" = ["S101"]

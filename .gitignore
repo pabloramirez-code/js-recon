@@ -1,0 +1,19 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# --- js-recon ---
+# Secretos: la API key vive aquí y NUNCA debe llegar a git.
+.env
+# Resultados de escaneos: pueden contener secretos reales del objetivo.
+output/
+
+# Caché de hypothesis (base de datos de ejemplos fallidos, local).
+.hypothesis/
