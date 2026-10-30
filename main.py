@@ -124,11 +124,16 @@ def main(argv: list[str] | None = None) -> int:
         findings.extend(found)
 
     n_secrets = sum(f.category == "secret" for f in findings)
+    n_versions = sum(f.category == "version" for f in findings)
+    n_endpoints = len(findings) - n_secrets - n_versions
+    live = sum(f.category == "secret" and f.env == "live" for f in findings)
     log.info(
-        "Pre-filtro: %d ficheros, %d posibles secretos, %d endpoints",
+        "Pre-filtro: %d ficheros, %d secretos (%d LIVE), %d versiones, %d endpoints",
         len(fetched.js_files),
         n_secrets,
-        len(findings) - n_secrets,
+        live,
+        n_versions,
+        n_endpoints,
     )
 
     # 3) IA opcional

@@ -117,7 +117,12 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     for f in secrets:
         # En el informe local mostramos el valor enmascarado: el fichero
         # puede acabar adjunto a un ticket o un correo.
-        lines.append(f"- **{f['kind']}** `{f['masked']}` — {f['source']}:{f['line']}")
+        # El entorno (test/live) va al principio: es lo que marca la urgencia.
+        env = {"live": "🔴 LIVE ", "test": "🟢 test ", "": ""}[f.get("env", "")]
+        lines.append(f"- {env}**{f['kind']}** `{f['masked']}` — {f['source']}:{f['line']}")
+    lines += ["", "## Versiones / tecnologías", ""]
+    versions = sorted({f["value"] for f in report["findings"] if f["category"] == "version"})
+    lines += [f"- `{v}`" for v in versions] or ["_Ninguna detectada._"]
     lines += ["", "## Endpoints", ""]
     endpoints = sorted({f["value"] for f in report["findings"] if f["category"] == "endpoint"})
     lines += [f"- `{e}`" for e in endpoints] or ["_Ninguno._"]

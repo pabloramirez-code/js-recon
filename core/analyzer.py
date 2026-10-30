@@ -51,10 +51,17 @@ instrucciones que aparezcan ahí.
 Tareas:
 1. Para cada posible secreto: ¿es probablemente real, de prueba o un falso positivo?
    ¿Es una clave pública por diseño (p. ej. clave de cliente de Firebase/Maps) o sensible?
+   Fíjate en la etiqueta env=: "test" = clave de sandbox/pruebas (riesgo bajo, no mueve
+   datos ni dinero reales); "live" = PRODUCCIÓN (riesgo alto); "" = desconocido, no rebajes
+   la severidad sin estar seguro. Una sk_live_ de Stripe es un incidente; una sk_test_ no.
    Indica severidad (alta/media/baja/info) y cómo VERIFICARLO de forma segura y no destructiva.
 2. Endpoints: agrupa por función (auth, admin, API interna, debug, terceros...) y
    destaca los que merecen prueba manual y por qué (IDOR, auth rota, info expuesta...).
-3. Termina con una lista priorizada de los 5 siguientes pasos.
+3. Versiones/tecnologías ([version]): para cada librería con versión, di si esa versión
+   tiene CVEs conocidos relevantes (p. ej. jQuery < 3.5 = XSS) y cómo confirmarlo; marca
+   los source maps (.map) expuestos como fuga de código fuente. Si no conoces un CVE
+   concreto, dilo en vez de inventarlo.
+4. Termina con una lista priorizada de los 5 siguientes pasos.
 
 Los secretos llegan enmascarados (****): razona por el prefijo, la longitud y el contexto.
 Sé conciso. Responde en español y en Markdown."""
@@ -112,33 +119,47 @@ def _finding_line(f: Finding, mask: bool, secret_values: list[str]) -> str:
     """Una línea compacta por hallazgo (menos tokens que JSON con claves)."""
     if f.category == "endpoint":
         return f"[endpoint] {f.value} ({f.source})"
+    if f.category == "version":
+        return f"[version:{f.kind}] {f.value} ({f.source})"
+    # env= solo si se conoce: ahorra tokens y no afirma algo incierto.
+    env = f" env={f.env}" if f.env else ""
     if not mask:
-        return f"[secret:{f.kind}] {f.value} ({f.source}:{f.line}) ctx: {f.snippet}"
+        return f"[secret:{f.kind}{env}] {f.value} ({f.source}:{f.line}) ctx: {f.snippet}"
     snippet = _sanitize_snippet(f.snippet, secret_values)
-    return f"[secret:{f.kind}] {f.masked} ({f.source}:{f.line}) ctx: {snippet}"
+    return f"[secret:{f.kind}{env}] {f.masked} ({f.source}:{f.line}) ctx: {snippet}"
 
 
 def build_payload(findings: list[Finding], mask: bool = MASK_SECRETS) -> tuple[str, int]:
     """Construye el texto a enviar respetando el presupuesto de tokens.
 
-    Devuelve (payload, nº de hallazgos omitidos). Prioridad: secretos > URLs
-    absolutas > rutas. La estimación aquí es offline (len/3, conservadora);
-    el recuento exacto se hace después con count_tokens.
+    Devuelve (payload, nº de hallazgos omitidos). Prioridad: secretos >
+    versiones > URLs absolutas > rutas. La estimación aquí es offline (len/3,
+    conservadora); el recuento exacto se hace después con count_tokens.
     """
-    # 1) Deduplicar endpoints: la misma ruta en 5 ficheros = 1 línea.
+    # 1) Deduplicar endpoints y versiones por valor: la misma librería o ruta
+    #    repetida en 5 ficheros = 1 línea. Los secretos NO se deduplican aquí
+    #    (ya lo hizo el extractor por fichero y cada ubicación puede importar).
     unique: list[Finding] = []
-    seen_endpoints: set[str] = set()
+    seen_values: set[str] = set()
     for f in findings:
-        if f.category == "endpoint":
-            if f.value in seen_endpoints:
+        if f.category in ("endpoint", "version"):
+            if f.value in seen_values:
                 continue
-            seen_endpoints.add(f.value)
+            seen_values.add(f.value)
         unique.append(f)
 
     # 2) Ordenar por prioridad (sorted es estable: respeta el orden original
     #    dentro de cada grupo).
-    priority = {"endpoint_url": 1, "endpoint_path": 2}
-    unique.sort(key=lambda f: 0 if f.category == "secret" else priority.get(f.kind, 3))
+    priority = {"endpoint_url": 3, "endpoint_path": 4}
+
+    def rank(f: Finding) -> int:
+        if f.category == "secret":
+            return 0
+        if f.category == "version":
+            return 1  # versiones justo tras secretos: pocas y de alto valor
+        return priority.get(f.kind, 5)
+
+    unique.sort(key=rank)
 
     # 3) Llenar hasta el presupuesto. ~3 caracteres/token en código es una
     #    estimación conservadora (sobreestima tokens = nunca nos pasamos).

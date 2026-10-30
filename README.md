@@ -154,13 +154,24 @@ URL → [fetcher] descarga HTML + JS del mismo host
    timeout y un límite de 5 MB; un `.js` caído se registra y no detiene el
    resto.
 2. **extractor** — Aplica regex para encontrar claves de AWS/Google/GitHub,
-   JWT, tokens Bearer, claves privadas, credenciales en URL y secretos
+   Stripe, JWT, tokens Bearer, claves privadas, credenciales en URL y secretos
    genéricos (filtrados por entropía para reducir falsos positivos), además de
-   endpoints. Es gratis y determinista.
+   endpoints y **versiones de librerías/tecnologías**. Es gratis y determinista.
+   - **Entorno test vs producción:** cada secreto se etiqueta como `test`
+     (sandbox/pruebas, riesgo bajo), `live` (producción, riesgo alto) o vacío
+     (desconocido). Se deduce del prefijo que pone el proveedor (`sk_test_` vs
+     `sk_live_` en Stripe, `sandbox_` vs `production_` en Braintree) y, si la
+     clave no lo dice, del contexto cercano. Ante la duda se deja en blanco:
+     nunca se rebaja la severidad de una clave real por una coincidencia.
+   - **Versiones:** librerías servidas por CDN con versión (`vue@2.6.14`),
+     banners (`jQuery v1.8.2`), versiones declaradas y source maps (`.map`)
+     expuestos. Sirve para cruzar con CVEs conocidos.
 3. **analyzer** — Opcional. Envía al modelo **solo** los hallazgos del
    pre-filtro, en formato compacto y con los secretos **enmascarados**
-   (`AKIA****MPLE`). El JS del objetivo se trata como datos, no como
-   instrucciones.
+   (`AKIA****MPLE`). El modelo recibe la etiqueta de entorno y las versiones, y
+   razona sobre severidad (una `sk_live_` es un incidente; una `sk_test_` no) y
+   sobre CVEs de las versiones detectadas. El JS del objetivo se trata como
+   datos, no como instrucciones.
 
 ---
 
@@ -168,8 +179,9 @@ URL → [fetcher] descarga HTML + JS del mismo host
 
 Cada ejecución crea `output/<host>_<fecha>/` con:
 
-- **`report.md`** — Informe legible: secretos (enmascarados), endpoints y, si
-  usaste IA, el análisis razonado con su coste.
+- **`report.md`** — Informe legible: secretos (enmascarados, con 🔴 LIVE /
+  🟢 test), versiones detectadas, endpoints y, si usaste IA, el análisis
+  razonado con su coste.
 - **`report.json`** — Los mismos datos en formato máquina, para encadenar con
   otras herramientas.
 - **`js/`** — Los `.js` descargados tal cual. Son tu evidencia y te permiten

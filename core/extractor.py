@@ -24,12 +24,16 @@ from config import GENERIC_SECRET_MIN_ENTROPY, MAX_FINDINGS_PER_FILE, SNIPPET_CO
 
 @dataclass(frozen=True)  # frozen: inmutable y hashable (sirve para deduplicar)
 class Finding:
-    category: str  # "secret" o "endpoint"
-    kind: str  # tipo concreto: aws_access_key_id, jwt, endpoint_path...
-    value: str  # el texto capturado (secreto completo o ruta)
+    category: str  # "secret", "endpoint" o "version"
+    kind: str  # tipo concreto: aws_access_key_id, jwt, endpoint_path, library...
+    value: str  # el texto capturado (secreto completo, ruta o nombre@versión)
     source: str  # fichero/URL de origen
     line: int  # línea (1-based); en minificado casi siempre 1
     snippet: str  # contexto alrededor, para que un humano o la IA lo juzguen
+    # Entorno del secreto: "test" (sandbox/pruebas), "live" (producción) o ""
+    # (desconocido/no aplica). Es la señal más útil para priorizar: una clave
+    # de test filtrada es ruido; una de producción es un incidente.
+    env: str = ""
 
     @property
     def masked(self) -> str:
@@ -48,7 +52,18 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern[str], int]] = [
     ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,255}\b"), 0),
     ("github_fine_grained_pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,255}"), 0),
     ("slack_token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,200}"), 0),
-    ("stripe_secret_key", re.compile(r"\b[rs]k_live_[0-9A-Za-z]{16,99}\b"), 0),
+    # Stripe: distinguimos clave secreta (sk/rk) de la publicable (pk, pensada
+    # para ir en el frontend) y, dentro de cada una, test vs live. La parte
+    # _(live|test)_ la lee classify_env() para marcar el entorno.
+    ("stripe_secret_key", re.compile(r"\b[rs]k_(?:live|test)_[0-9A-Za-z]{16,99}\b"), 0),
+    ("stripe_publishable_key", re.compile(r"\bpk_(?:live|test)_[0-9A-Za-z]{16,99}\b"), 0),
+    # PayPal/Braintree y SendGrid también codifican el entorno en la clave.
+    (
+        "braintree_token",
+        re.compile(r"\b(?:sandbox|production)_[0-9a-z]{8,32}_[0-9a-z]{16,64}\b"),
+        0,
+    ),
+    ("sendgrid_key", re.compile(r"\bSG\.[A-Za-z0-9_-]{20,66}\.[A-Za-z0-9_-]{20,66}"), 0),
     ("anthropic_api_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,200}"), 0),
     ("openai_api_key", re.compile(r"\bsk-proj-[A-Za-z0-9_-]{20,200}"), 0),
     # JWT: header.payload.firma; los dos primeros empiezan por "eyJ" ('{"' en
@@ -95,6 +110,75 @@ STATIC_EXT = re.compile(
 PLACEHOLDER_RE = re.compile(
     r"(?i)^(?:x{4,}|\*{4,}|your[_-]|<|\$\{|\{\{|process\.env|example|changeme|placeholder|undefined|null)"
 )
+
+# --- Clasificación de entorno (test vs producción) ----------------------------
+# Sobre el VALOR solo confiamos en marcadores ESTRUCTURALES del proveedor:
+# Stripe (sk_test_/sk_live_), Braintree (sandbox_/production_). No valen
+# subcadenas sueltas como "example" o "demo" dentro de una clave aleatoria:
+# rebajarían la severidad de una clave real por coincidencia.
+_VALUE_TEST_RE = re.compile(r"(?i)(?:_test_|\bsandbox_)")
+_VALUE_LIVE_RE = re.compile(r"(?i)(?:_live_|\bproduction_)")
+# Sobre el CONTEXTO (nombre de variable, comentario cercano) sí admitimos más
+# palabras, pero con \b para que "stripeLive" o "latest" no cuenten como "live".
+_CTX_TEST_RE = re.compile(r"(?i)\b(?:test|sandbox|staging|dev|demo|example)\b")
+_CTX_LIVE_RE = re.compile(r"(?i)\b(?:live|production|prod)\b")
+
+
+def classify_env(kind: str, value: str, snippet: str) -> str:
+    """Devuelve "test", "live" o "" para un secreto.
+
+    POR QUÉ: separar riesgo. Una 'sk_test_...' de Stripe no mueve dinero real;
+    una 'sk_live_...' sí. El prefijo de la clave (test/live) es intencional del
+    proveedor y manda sobre todo. Si la clave no lo dice, el contexto cercano
+    solo desempata cuando es inequívoco. Ante la duda, "" (desconocido):
+    preferimos NO tocar la severidad sin estar seguros.
+    """
+    if _VALUE_LIVE_RE.search(value):
+        return "live"
+    if _VALUE_TEST_RE.search(value):
+        return "test"
+    in_test, in_live = bool(_CTX_TEST_RE.search(snippet)), bool(_CTX_LIVE_RE.search(snippet))
+    if in_test and not in_live:
+        return "test"
+    if in_live and not in_test:
+        return "live"
+    return ""
+
+
+# --- Patrones de versiones / tecnologías --------------------------------------
+# POR QUÉ: saber QUÉ librería y QUÉ versión corre el objetivo permite cruzarlo
+# con CVEs conocidos (p. ej. jQuery < 3.5 tiene XSS). La IA razona sobre esto.
+VERSION_PATTERNS: list[tuple[str, re.Pattern[str], int]] = [
+    # Librería servida desde CDN con versión en la URL:
+    # cdn.jsdelivr.net/npm/vue@2.6.14, unpkg.com/react@17.0.2, .../jquery@3.4.1
+    (
+        "cdn_library",
+        re.compile(r"(?:/npm/|unpkg\.com/|/ajax/libs/)([@\w./-]{2,60}@[0-9][\w.-]{1,30})"),
+        1,
+    ),
+    # cdnjs usa ruta en vez de @: /ajax/libs/jquery/3.4.1/jquery.min.js
+    ("cdnjs_library", re.compile(r"/ajax/libs/([a-zA-Z0-9._-]{2,40}/[0-9][\w.-]{1,30})"), 1),
+    # Banner típico que las librerías dejan en claro: "jQuery v3.6.0",
+    # "Bootstrap v4.5.2", "AngularJS v1.5.8", "Vue.js v2.6.14".
+    (
+        "library_banner",
+        re.compile(
+            r"(?i)\b(jquery|bootstrap|angular(?:js)?|vue(?:\.js)?|react|lodash|moment|"
+            r"d3|ember|backbone|axios)(?:\.js)?\s+v?([0-9]+\.[0-9]+(?:\.[0-9]+)?)"
+        ),
+        0,
+    ),
+    # Asignación de versión genérica: version: "1.2.3" / "version":"1.2.3"
+    (
+        "declared_version",
+        re.compile(
+            r"""(?i)\bversion["']?\s{0,3}[:=]\s{0,3}["']([0-9]+\.[0-9]+(?:\.[0-9]+)?)["']"""
+        ),
+        1,
+    ),
+    # Source map referenciado: si está publicado, expone el código original.
+    ("source_map", re.compile(r"sourceMappingURL=([^\s*]{1,200}\.map)"), 1),
+]
 
 
 def shannon_entropy(s: str) -> float:
@@ -164,7 +248,10 @@ def extract(text: str, source: str = "<memory>") -> list[Finding]:
         seen.add(key)
         start, end = m.span(group)
         line = bisect_right(newlines, start) + 1
-        findings.append(Finding(category, kind, value, source, line, _snippet(text, start, end)))
+        snippet = _snippet(text, start, end)
+        # Solo los secretos tienen entorno; el contexto se mira sobre el snippet.
+        env = classify_env(kind, value, snippet) if category == "secret" else ""
+        findings.append(Finding(category, kind, value, source, line, snippet, env))
 
     for kind, pattern, group in SECRET_PATTERNS:
         for m in pattern.finditer(text):
@@ -176,12 +263,17 @@ def extract(text: str, source: str = "<memory>") -> list[Finding]:
             continue  # descartado aquí = tokens que no pagas después
         add("secret", "generic_secret", m, 1)
 
+    for kind, pattern, group in VERSION_PATTERNS:
+        for m in pattern.finditer(text):
+            add("version", kind, m, group)
+
     for m in ENDPOINT_RE.finditer(text):
         value = m.group(1)
         if _is_interesting_endpoint(value):
             kind = "endpoint_url" if value.startswith("http") else "endpoint_path"
             add("endpoint", kind, m, 1)
 
-    # Los secretos van primero en la lista, así que si recortamos, se pierden
-    # endpoints antes que secretos (los secretos valen más).
+    # Orden de prioridad para el recorte: secretos > versiones > endpoints.
+    rank = {"secret": 0, "version": 1, "endpoint": 2}
+    findings.sort(key=lambda f: rank.get(f.category, 3))
     return findings[:MAX_FINDINGS_PER_FILE]

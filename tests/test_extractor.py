@@ -64,8 +64,12 @@ def check_invariants(text: str) -> list[Finding]:
     keys = set()
     for f in findings:
         assert isinstance(f, Finding)
-        assert f.category in ("secret", "endpoint")
+        assert f.category in ("secret", "endpoint", "version")
         assert f.value, "un hallazgo vacío no aporta nada"
+        # Solo los secretos tienen entorno, y solo uno de estos tres valores.
+        assert f.env in ("", "test", "live")
+        if f.category != "secret":
+            assert f.env == ""
         # Invariante fuerte: lo capturado existe LITERALMENTE en la entrada.
         # Si un offset estuviera mal, esto falla.
         assert f.value in text
@@ -190,3 +194,55 @@ def test_no_catastrophic_backtracking(text):
     check_invariants(text)
     # Lineal ≈ milisegundos; un backtracking catastrófico serían minutos.
     assert time.perf_counter() - start < 2.0
+
+
+# --- 6. Entorno test/live: una clave Stripe se clasifica por su prefijo ----------
+STRIPE_BODY = st.text(alphabet=string.ascii_letters + string.digits, min_size=16, max_size=40)
+
+
+@PBT
+@given(JS_LIKE, st.sampled_from(["sk", "rk", "pk"]), st.sampled_from(["test", "live"]), STRIPE_BODY)
+@example("", "sk", "live", "A" * 24)
+@example("", "sk", "test", "A" * 24)
+def test_stripe_key_env_matches_prefix(before, prefix, mode, body):
+    key = f"{prefix}_{mode}_{body}"
+    text = f'{before} stripe="{key}"'
+    matches = [f for f in check_invariants(text) if f.value == key]
+    assert matches, "la clave de Stripe debería detectarse"
+    # La propiedad clave: el entorno SIEMPRE coincide con el prefijo de la clave,
+    # porque el prefijo lo pone Stripe a propósito. Esto es lo que separa "mueve
+    # dinero real" de "no lo mueve".
+    assert all(f.env == mode for f in matches)
+
+
+@PBT
+@given(st.sampled_from(["sk_live_", "rk_live_"]), STRIPE_BODY)
+def test_live_key_never_downgraded_to_test(prefix, body):
+    # Aunque el contexto diga "test", una clave _live_ NO debe rebajarse: el
+    # prefijo de la clave manda sobre el nombre de la variable.
+    key = prefix + body
+    text = f'var testKey = "{key}"; // entorno de test'
+    matches = [f for f in extract(text, "t.js") if f.value == key]
+    assert matches and all(f.env == "live" for f in matches)
+
+
+# --- 7. Versiones: una librería con versión se detecta ---------------------------
+@PBT
+@given(
+    JS_LIKE,
+    st.sampled_from(["jquery", "vue", "react", "lodash", "axios"]),
+    st.tuples(st.integers(0, 99), st.integers(0, 99), st.integers(0, 99)),
+)
+def test_cdn_versioned_library_is_detected(before, lib, ver):
+    v = f"{ver[0]}.{ver[1]}.{ver[2]}"
+    text = f'{before}<script src="https://cdn.jsdelivr.net/npm/{lib}@{v}/dist.js">'
+    versions = {f.value for f in check_invariants(text) if f.category == "version"}
+    assert f"{lib}@{v}" in versions
+
+
+@PBT
+@given(st.sampled_from(["jQuery", "Bootstrap", "Vue.js", "AngularJS"]), st.integers(0, 20))
+def test_library_banner_is_detected(lib, minor):
+    text = f"/*! {lib} v3.{minor}.0 | (c) foundation */"
+    found = [f for f in check_invariants(text) if f.category == "version"]
+    assert any(f"3.{minor}.0" in f.value for f in found)
