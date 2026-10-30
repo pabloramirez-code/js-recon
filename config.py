@@ -73,3 +73,18 @@ MASK_SECRETS = True
 # Timeout de la llamada a la API (segundos). El SDK reintenta 2 veces por
 # defecto ante 429/5xx/errores de red.
 API_TIMEOUT_SECONDS = 120.0
+
+# --- Modo profundo (--deep): análisis del contenido COMPLETO de los .js -------
+# Presupuesto de tokens de ENTRADA por petición. Empaquetamos varios ficheros
+# en un mismo lote hasta este tope para amortizar el system prompt y la
+# sobrecarga por petición. 120K deja holgura para la salida en el contexto de
+# 1M y mantiene Haiku en su tramo de precio más barato (<=100K... lo superamos
+# ligeramente a propósito; si quieres el precio mínimo, bájalo a 90_000).
+DEEP_BATCH_TOKENS = 120_000
+# Techo DURO de tokens de entrada para toda la ejecución profunda. Es la red de
+# seguridad contra un coste disparado: si el total lo supera, se analizan los
+# ficheros que quepan y se avisa del resto en vez de gastar sin límite.
+DEEP_MAX_TOTAL_TOKENS = 1_000_000
+# Si el coste estimado supera este umbral (USD), se pide confirmación antes de
+# gastar (salvo --yes). El modo profundo puede costar dinero de verdad.
+DEEP_CONFIRM_USD = 0.25

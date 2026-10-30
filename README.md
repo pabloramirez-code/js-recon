@@ -121,6 +121,7 @@ usage: js-recon [-h] [--no-ai] [--model {haiku,opus}] [--dry-run]
 |---|---|
 | `url` | URL objetivo (`http://` o `https://`). Argumento obligatorio. |
 | `--no-ai` | Solo pre-filtro regex, sin llamar a la API. Coste 0. |
+| `--deep` | Análisis profundo: manda el **código completo** de los `.js` a la IA (ver §7b). Más caro; pide confirmación de coste. |
 | `--model {haiku,opus}` | Modelo para el análisis. Por defecto `haiku`. |
 | `--dry-run` | Cuenta tokens y estima coste, pero no llama al modelo. |
 | `--include-third-party` | Descarga también JS de otros hosts. Solo si están en scope. |
@@ -230,6 +231,46 @@ Cómo gastar menos:
 
 ---
 
+## 7b. Modo profundo (`--deep`)
+
+El análisis normal solo manda a la IA los **hallazgos** del pre-filtro: es
+barato, pero no "lee" la lógica del código (flujos de autenticación,
+validaciones que se hacen solo en el cliente, usos peligrosos del DOM...). El
+modo profundo manda el **código fuente completo** de cada `.js`, para un
+análisis mucho más rico.
+
+```powershell
+python -m uv run python main.py https://mi-lab.local/ --deep --dry-run   # estima coste
+python -m uv run python main.py https://mi-lab.local/ --deep             # analiza (pide confirmación)
+```
+
+Como mandar código entero es caro, está optimizado para gastar lo mínimo:
+
+1. **Deduplicación por contenido** — un bundle idéntico servido en varias
+   rutas se analiza **una sola vez** (comparación por hash SHA-256).
+2. **Empaquetado en lotes** — se meten varios ficheros en una misma petición
+   hasta `DEEP_BATCH_TOKENS`, así el system prompt y la sobrecarga por petición
+   se pagan una vez por lote y no por fichero.
+3. **Caché del system prompt** — las instrucciones son idénticas en todos los
+   lotes, así que con `cache_control` la API las cobra ~una sola vez.
+4. **Troceado** — un fichero más grande que un lote se parte en trozos, de modo
+   que el análisis es realmente **completo** (no se descarta código).
+5. **Recuento antes de gastar** — cuenta los tokens exactos y te enseña el
+   coste máximo **antes** de llamar al modelo.
+6. **Confirmación de coste** — si el coste estimado supera `DEEP_CONFIRM_USD`
+   (0,25 $ por defecto), pide confirmación salvo que uses `--yes`.
+7. **Síntesis final** — si hubo varios lotes, los fusiona en un único informe
+   priorizado con una llamada extra barata.
+
+Además hay un **techo duro** de tokens para toda la ejecución
+(`DEEP_MAX_TOTAL_TOKENS`): si se alcanza, analiza lo que quepa y avisa del
+resto, para que un objetivo enorme no dispare la factura por sorpresa.
+
+> Combínalo con el modelo: `--deep` con `haiku` para una primera lectura
+> completa barata, `--deep --model opus` cuando quieras el máximo detalle.
+
+---
+
 ## 8. Configuración avanzada
 
 Todos los valores ajustables están en `config.py`:
@@ -245,6 +286,9 @@ Todos los valores ajustables están en `config.py`:
 | `MAX_RESPONSE_BYTES` | Tamaño máximo por respuesta (protege la memoria). |
 | `REQUEST_TIMEOUT` | `(conexión, lectura)` en segundos. |
 | `GENERIC_SECRET_MIN_ENTROPY` | Umbral de entropía para aceptar un secreto genérico. |
+| `DEEP_BATCH_TOKENS` | (modo `--deep`) Tokens de entrada por lote/petición. |
+| `DEEP_MAX_TOTAL_TOKENS` | (modo `--deep`) Techo duro de tokens para toda la ejecución. |
+| `DEEP_CONFIRM_USD` | (modo `--deep`) Umbral de coste que dispara la confirmación. |
 
 ---
 
@@ -268,10 +312,17 @@ python -m uv run python main.py https://mi-lab.local/ --dry-run
 python -m uv run python main.py https://mi-lab.local/ --include-third-party --max-js 100 --no-ai
 ```
 
-**Análisis profundo de un objetivo pequeño:**
+**Análisis de los hallazgos del pre-filtro con Opus:**
 
 ```powershell
 python -m uv run python main.py https://mi-lab.local/ --model opus
+```
+
+**Análisis profundo del código completo** (lee toda la lógica, ver §7b):
+
+```powershell
+python -m uv run python main.py https://mi-lab.local/ --deep            # con Haiku, barato
+python -m uv run python main.py https://mi-lab.local/ --deep --model opus  # máximo detalle
 ```
 
 ---

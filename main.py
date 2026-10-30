@@ -12,7 +12,7 @@ import sys
 from datetime import UTC, datetime
 
 from config import DEFAULT_MODEL, MAX_JS_FILES, MODELS
-from core.analyzer import analyze
+from core.analyzer import analyze, analyze_deep
 from core.extractor import extract
 from core.fetcher import fetch_target, validate_target
 from utils.io import (
@@ -34,6 +34,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("url", help="URL objetivo (http:// o https://)")
     p.add_argument("--no-ai", action="store_true", help="solo pre-filtro regex, sin API (coste 0)")
+    p.add_argument(
+        "--deep",
+        action="store_true",
+        help="análisis profundo: manda el CÓDIGO COMPLETO de los .js a la IA "
+        "(más caro; optimizado con dedup, lotes y caché). Pide confirmación de coste.",
+    )
     p.add_argument(
         "--model",
         choices=sorted(MODELS),
@@ -140,6 +146,12 @@ def main(argv: list[str] | None = None) -> int:
     analysis = None
     if args.no_ai:
         log.info("--no-ai: se omite el análisis con IA")
+    elif args.deep:
+        # Modo profundo: todo el código a la IA (optimizado). El scope ya se
+        # confirmó; el coste se confirma aparte salvo --yes.
+        analysis = analyze_deep(
+            fetched.js_files, args.model, dry_run=args.dry_run, assume_yes=args.yes
+        )
     else:
         analysis = analyze(findings, args.model, dry_run=args.dry_run)
 
