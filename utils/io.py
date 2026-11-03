@@ -21,11 +21,7 @@ log = logging.getLogger("js_recon")
 
 
 class ColorFormatter(logging.Formatter):
-    """Formatter que colorea el nivel con códigos ANSI.
-
-    POR QUÉ ANSI a mano y no una librería: son 5 códigos, no justifican una
-    dependencia, y Windows Terminal / PowerShell modernos los entienden.
-    """
+   
 
     COLORS: ClassVar[dict[int, str]] = {
         logging.DEBUG: "\033[90m",  # gris: detalle que normalmente no miras
@@ -79,11 +75,10 @@ def safe_filename(url: str, suffix: str = ".js") -> str:
 
 
 def make_run_dir(target_url: str) -> Path:
-    """Crea output/<host>_<timestamp>/ para que cada ejecución no pise otra."""
-    from config import OUTPUT_DIR  # import local: evita ciclos al testear
+    from config import OUTPUT_DIR  
 
     host = re.sub(r"[^A-Za-z0-9.-]", "_", urlparse(target_url).netloc) or "target"
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")  # UTC: sin líos de zona
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")  
     run_dir = OUTPUT_DIR / f"{host}_{stamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir

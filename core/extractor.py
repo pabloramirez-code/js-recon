@@ -112,11 +112,12 @@ PLACEHOLDER_RE = re.compile(
 )
 
 # --- Clasificación de entorno (test vs producción) ----------------------------
-# Sobre el VALOR solo confiamos en marcadores ESTRUCTURALES del proveedor:
-# Stripe (sk_test_/sk_live_), Braintree (sandbox_/production_). No valen
-# subcadenas sueltas como "example" o "demo" dentro de una clave aleatoria:
-# rebajarían la severidad de una clave real por coincidencia.
-_VALUE_TEST_RE = re.compile(r"(?i)(?:_test_|\bsandbox_)")
+_VALUE_TEST_RE = re.compile(
+    r"(?i)(?:_test_|"
+    r"\bsandbox_|"
+    r"\w*test\w*|"
+    r"\w*sandbox\w*)"
+)
 _VALUE_LIVE_RE = re.compile(r"(?i)(?:_live_|\bproduction_)")
 # Sobre el CONTEXTO (nombre de variable, comentario cercano) sí admitimos más
 # palabras, pero con \b para que "stripeLive" o "latest" no cuenten como "live".

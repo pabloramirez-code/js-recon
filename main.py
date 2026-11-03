@@ -73,7 +73,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def confirm_scope(url: str, assume_yes: bool) -> bool:
-    """Fricción deliberada: obliga a pensar en el scope antes de lanzar tráfico."""
     print(f"\n  Objetivo: {url}", file=sys.stderr)
     print("  ¿Está este host DENTRO del scope autorizado por escrito?", file=sys.stderr)
     if assume_yes:
@@ -100,12 +99,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.insecure:
         log.warning("Verificación TLS desactivada (--insecure)")
-        # Silenciar el aviso de urllib3 en cada petición: ya avisamos una vez.
         import urllib3
 
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    # 1) Descarga
+    
     fetched = fetch_target(
         url,
         include_third_party=args.include_third_party,
@@ -116,7 +114,6 @@ def main(argv: list[str] | None = None) -> int:
         log.error("No se pudo descargar la página objetivo")
         return 1
 
-    # 2) Pre-filtro regex (gratis, local)
     run_dir = make_run_dir(url)
     js_dir = run_dir / "js"
     js_dir.mkdir(exist_ok=True)
