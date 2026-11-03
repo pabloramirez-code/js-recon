@@ -9,6 +9,13 @@ dependencies = [
     "requests>=2.34.2",
 ]
 
+# Extra opcional: solo quien use --browser instala Playwright.
+#   python -m uv sync --extra browser
+[project.optional-dependencies]
+browser = [
+    "playwright>=1.64.1",
+]
+
 [dependency-groups]
 dev = [
     "hypothesis>=6.170.14",

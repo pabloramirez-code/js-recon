@@ -21,8 +21,6 @@ log = logging.getLogger("js_recon")
 
 
 class ColorFormatter(logging.Formatter):
-   
-
     COLORS: ClassVar[dict[int, str]] = {
         logging.DEBUG: "\033[90m",  # gris: detalle que normalmente no miras
         logging.INFO: "\033[36m",  # cian: progreso normal
@@ -75,10 +73,10 @@ def safe_filename(url: str, suffix: str = ".js") -> str:
 
 
 def make_run_dir(target_url: str) -> Path:
-    from config import OUTPUT_DIR  
+    from config import OUTPUT_DIR
 
     host = re.sub(r"[^A-Za-z0-9.-]", "_", urlparse(target_url).netloc) or "target"
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")  
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = OUTPUT_DIR / f"{host}_{stamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
@@ -100,7 +98,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "",
         f"- Fecha (UTC): {report['generated_at']}",
         f"- Ficheros JS analizados: {len(report['js_files'])}",
-        f"- Fuera de scope (no descargados): {len(report['out_of_scope'])}",
+        f"- Fuera de scope (no analizados): {len(report['out_of_scope'])}",
         f"- Errores de red: {len(report['errors'])}",
         "",
         "## Posibles secretos",
@@ -115,6 +113,25 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         # El entorno (test/live) va al principio: es lo que marca la urgencia.
         env = {"live": "🔴 LIVE ", "test": "🟢 test ", "": ""}[f.get("env", "")]
         lines.append(f"- {env}**{f['kind']}** `{f['masked']}` — {f['source']}:{f['line']}")
+    lines += ["", "## Lógica de negocio (pagos, reglas, controles en cliente)", ""]
+    # Lo más grave arriba: modos TEST, luego pagos y flags, luego el resto.
+    order = ["payment_method", "test_mode", "debug_flag", "client_check", "role_check"]
+    logic = sorted(
+        (f for f in report["findings"] if f["category"] == "logic"),
+        key=lambda f: (f.get("env") != "test", [*order, f["kind"]].index(f["kind"])),
+    )
+    if not logic:
+        lines.append("_Nada detectado._")
+    for f in logic:
+        # En lógica, "test" es una ALERTA (p. ej. pasarela de pago de test en la
+        # web real), no una rebaja de riesgo como en los secretos.
+        env = {"test": "🧪 TEST ", "live": "live ", "": ""}[f.get("env", "")]
+        lines.append(f"- {env}**{f['kind']}** `{f['value']}` — {f['source']}:{f['line']}")
+    lines += ["", "## DOM: sinks y fuentes (posible XSS / open redirect)", ""]
+    dom = [f for f in report["findings"] if f["category"] == "dom"]
+    lines += [f"- **{f['kind']}** `{f['value']}` — {f['source']}:{f['line']}" for f in dom] or [
+        "_Nada detectado._"
+    ]
     lines += ["", "## Versiones / tecnologías", ""]
     versions = sorted({f["value"] for f in report["findings"] if f["category"] == "version"})
     lines += [f"- `{v}`" for v in versions] or ["_Ninguna detectada._"]

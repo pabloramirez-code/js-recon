@@ -64,11 +64,11 @@ def check_invariants(text: str) -> list[Finding]:
     keys = set()
     for f in findings:
         assert isinstance(f, Finding)
-        assert f.category in ("secret", "endpoint", "version")
+        assert f.category in ("secret", "logic", "version", "dom", "endpoint")
         assert f.value, "un hallazgo vacío no aporta nada"
-        # Solo los secretos tienen entorno, y solo uno de estos tres valores.
+        # Solo secretos y lógica tienen entorno, y solo uno de estos tres valores.
         assert f.env in ("", "test", "live")
-        if f.category != "secret":
+        if f.category not in ("secret", "logic"):
             assert f.env == ""
         # Invariante fuerte: lo capturado existe LITERALMENTE en la entrada.
         # Si un offset estuviera mal, esto falla.

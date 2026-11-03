@@ -28,6 +28,18 @@ MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 # cliente puedan identificar tu tráfico.
 USER_AGENT = "js-recon/0.1 (authorized security testing)"
 
+# --- Modo navegador (--browser) -----------------------------------------------
+# Perfil propio de la herramienta (NO tu Chrome personal). Persiste entre
+# ejecuciones para no tener que volver a iniciar sesión en la tienda; guarda
+# cookies del objetivo, por eso está en .gitignore. --fresh-profile lo evita.
+BROWSER_PROFILE_DIR = BASE_DIR / ".browser-profile"
+# "chrome" = el Google Chrome instalado (no hace falta descargar Chromium). Si
+# no está, se intenta el Chromium de Playwright ("playwright install chromium").
+BROWSER_CHANNEL = "chrome"
+# Navegando a mano se cargan muchos más .js que en una sola página (cada
+# sección de la tienda trae sus chunks), así que el tope por defecto es mayor.
+BROWSER_MAX_JS_FILES = 500
+
 # --- Extractor ----------------------------------------------------------------
 # Caracteres de contexto a cada lado de un hallazgo. En JS minificado todo es
 # UNA línea, así que el contexto se mide en caracteres, no en líneas.

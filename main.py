@@ -9,12 +9,20 @@ cambias requests por httpx o la IA por otra, este fichero apenas cambia.
 
 import argparse
 import sys
+from collections import Counter
 from datetime import UTC, datetime
 
-from config import DEFAULT_MODEL, MAX_JS_FILES, MODELS
+from config import (
+    BROWSER_MAX_JS_FILES,
+    BROWSER_PROFILE_DIR,
+    DEFAULT_MODEL,
+    MAX_JS_FILES,
+    MODELS,
+)
 from core.analyzer import analyze, analyze_deep
+from core.browser import capture_with_browser
 from core.extractor import extract
-from core.fetcher import fetch_target, validate_target
+from core.fetcher import fetch_target, make_scope, validate_target
 from utils.io import (
     log,
     make_run_dir,
@@ -57,11 +65,40 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="descarga también JS de otros hosts (¡solo si están en scope!)",
     )
     p.add_argument(
+        "--allow-host",
+        action="append",
+        default=[],
+        metavar="HOST",
+        help="analiza también los JS de este host (repetible; p. ej. cdn.tienda.com)",
+    )
+    p.add_argument(
+        "--scope-subdomains",
+        action="store_true",
+        help="analiza también los JS del dominio base y sus subdominios (*.tienda.com)",
+    )
+    p.add_argument(
+        "--browser",
+        action="store_true",
+        help="abre Chrome: navegas tú y se capturan todos los .js que cargue la web; "
+        "al cerrar el navegador se analizan",
+    )
+    p.add_argument(
+        "--fresh-profile",
+        action="store_true",
+        help="con --browser: usa un perfil temporal limpio (sin cookies ni sesiones previas)",
+    )
+    p.add_argument(
         "--insecure",
         action="store_true",
         help="no verificar TLS (labs con certificado autofirmado)",
     )
-    p.add_argument("--max-js", type=int, default=MAX_JS_FILES, help="máximo de ficheros JS")
+    p.add_argument(
+        "--max-js",
+        type=int,
+        default=None,
+        help=f"máximo de ficheros JS (por defecto {MAX_JS_FILES}; "
+        f"{BROWSER_MAX_JS_FILES} con --browser)",
+    )
     p.add_argument(
         "-y",
         "--yes",
@@ -103,16 +140,41 @@ def main(argv: list[str] | None = None) -> int:
 
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    
-    fetched = fetch_target(
-        url,
-        include_third_party=args.include_third_party,
-        verify_tls=not args.insecure,
-        max_js=args.max_js,
-    )
-    if not fetched.html:
-        log.error("No se pudo descargar la página objetivo")
-        return 1
+    if args.browser:
+        max_js = args.max_js or BROWSER_MAX_JS_FILES
+        scope = make_scope(
+            url,
+            include_third_party=args.include_third_party,
+            allow_hosts=args.allow_host,
+            subdomains=args.scope_subdomains,
+        )
+        try:
+            fetched = capture_with_browser(
+                url,
+                scope,
+                max_js=max_js,
+                profile_dir=BROWSER_PROFILE_DIR,
+                fresh_profile=args.fresh_profile,
+                verify_tls=not args.insecure,
+            )
+        except RuntimeError as e:  # Playwright no instalado
+            log.error("%s", e)
+            return 1
+        if not fetched.js_files:
+            log.error("No se capturó ningún .js dentro del scope")
+            return 1
+    else:
+        fetched = fetch_target(
+            url,
+            include_third_party=args.include_third_party,
+            allow_hosts=args.allow_host,
+            scope_subdomains=args.scope_subdomains,
+            verify_tls=not args.insecure,
+            max_js=args.max_js or MAX_JS_FILES,
+        )
+        if not fetched.html:
+            log.error("No se pudo descargar la página objetivo")
+            return 1
 
     run_dir = make_run_dir(url)
     js_dir = run_dir / "js"
@@ -126,18 +188,23 @@ def main(argv: list[str] | None = None) -> int:
         log.debug("%s -> %d hallazgos", js.url, len(found))
         findings.extend(found)
 
-    n_secrets = sum(f.category == "secret" for f in findings)
-    n_versions = sum(f.category == "version" for f in findings)
-    n_endpoints = len(findings) - n_secrets - n_versions
+    by_cat = Counter(f.category for f in findings)
     live = sum(f.category == "secret" and f.env == "live" for f in findings)
     log.info(
-        "Pre-filtro: %d ficheros, %d secretos (%d LIVE), %d versiones, %d endpoints",
+        "Pre-filtro: %d ficheros, %d secretos (%d LIVE), %d lógica, %d DOM, "
+        "%d versiones, %d endpoints",
         len(fetched.js_files),
-        n_secrets,
+        by_cat["secret"],
         live,
-        n_versions,
-        n_endpoints,
+        by_cat["logic"],
+        by_cat["dom"],
+        by_cat["version"],
+        by_cat["endpoint"],
     )
+    # Un modo test en pagos o flags de debug en la web real merece verse ya.
+    for f in findings:
+        if f.category == "logic" and f.env == "test":
+            log.warning("Modo TEST expuesto: %s %r en %s:%d", f.kind, f.value, f.source, f.line)
 
     # 3) IA opcional
     analysis = None

@@ -24,15 +24,15 @@ from config import GENERIC_SECRET_MIN_ENTROPY, MAX_FINDINGS_PER_FILE, SNIPPET_CO
 
 @dataclass(frozen=True)  # frozen: inmutable y hashable (sirve para deduplicar)
 class Finding:
-    category: str  # "secret", "endpoint" o "version"
-    kind: str  # tipo concreto: aws_access_key_id, jwt, endpoint_path, library...
+    category: str  # "secret", "logic", "version", "dom" o "endpoint"
+    kind: str  # tipo concreto: aws_access_key_id, payment_method, dom_sink, endpoint_path...
     value: str  # el texto capturado (secreto completo, ruta o nombre@versión)
     source: str  # fichero/URL de origen
     line: int  # línea (1-based); en minificado casi siempre 1
     snippet: str  # contexto alrededor, para que un humano o la IA lo juzguen
-    # Entorno del secreto: "test" (sandbox/pruebas), "live" (producción) o ""
-    # (desconocido/no aplica). Es la señal más útil para priorizar: una clave
-    # de test filtrada es ruido; una de producción es un incidente.
+    # Entorno: "test" (sandbox/pruebas), "live" (producción) o "" (desconocido/no
+    # aplica). En secretos prioriza: una clave de test filtrada es ruido; una de
+    # producción es un incidente. En lógica (pagos) marca un modo test expuesto.
     env: str = ""
 
     @property
@@ -181,6 +181,195 @@ VERSION_PATTERNS: list[tuple[str, re.Pattern[str], int]] = [
     ("source_map", re.compile(r"sourceMappingURL=([^\s*]{1,200}\.map)"), 1),
 ]
 
+# --- Lógica de negocio (category "logic") ---------------------------------------
+# POR QUÉ: en una tienda lo más jugoso para un pentest no siempre es una clave,
+# sino la LÓGICA que el frontend revela: qué métodos de pago existen (¿hay uno
+# de test activo en producción?), qué reglas de precio o pedido mínimo se
+# comprueban solo en el navegador, qué flags habilitan/bloquean cosas, qué
+# parámetros espera el servidor. Todo eso es lo que luego se manipula en Burp.
+_PAY = (
+    r"stripe|paypal|bizum|redsys|braintree|adyen|klarna|mollie|sumup|mercadopago|razorpay"
+    r"|paycomet|sequra|aplazame|apple_?pay|google_?pay|tpv|cash_?on_?delivery"
+    r"|contra_?reembolso|transferencia|bank_?transfer|in_store|cash"
+)
+# Inicio de identificador: el patrón solo arranca al PRINCIPIO de "a.b.c", no
+# en cada carácter de dentro. Sin esto, [\w$.]{0,40} se reintenta desde cada
+# posición y el extractor va ~3 veces más lento en bundles grandes.
+_ID = r"(?<![\w$.])"
+LOGIC_PATTERNS: list[tuple[str, re.Pattern[str], int]] = [
+    # Literal con nombre de pasarela/método: 'stripe_test', 'bizum', 'tpv'...
+    ("payment_method", re.compile(rf"""(?i)["'`]([\w-]{{0,25}}(?:{_PAY})[\w-]{{0,25}})["'`]"""), 1),
+    # Literales de modo test/sandbox/debug: 'test_mode', 'sandbox', 'preprod'.
+    (
+        "test_mode",
+        re.compile(
+            r"""(?i)["'`]([\w-]{0,30}(?:[_-]test\b|\btest[_-]|sandbox|staging|preprod"""
+            r"""|debug[_-]?mode|test[_-]?mode|dev[_-]?mode)[\w-]{0,30})["'`]"""
+        ),
+        1,
+    ),
+    # Flags de debug/test activados: debug: true, testMode=!0, isDev = "true".
+    (
+        "debug_flag",
+        re.compile(
+            r"""\b(?:testMode|test_mode|isTest|isSandbox|sandboxMode|debugMode|debug|DEBUG"""
+            r"""|isDev|devMode|isStaging)\s{0,3}[:=]\s{0,3}(?:!0\b|true\b|1\b|["']true["'])"""
+        ),
+        0,
+    ),
+    # Parámetros que el cliente manda (body.set('x'), FormData.append('x'),
+    # input[name="_csrf"]) o lee de la URL (searchParams.get('next')).
+    ("request_param", re.compile(r"""\.(?:set|append)\(\s{0,3}["'`]([\w\[\].-]{1,60})["'`]"""), 1),
+    ("request_param", re.compile(r"""\bname=\\?["']([\w\[\].-]{1,60})\\?["']"""), 1),
+    (
+        "url_param",
+        re.compile(r"""(?:searchParams|params|query)\.get\(\s{0,3}["'`]([\w\[\].-]{1,60})["'`]"""),
+        1,
+    ),
+    # Comentarios de desarrollador que sobreviven en el JS servido.
+    (
+        "dev_comment",
+        re.compile(r"(?<![:\w\"'\\/])//[ \t]{0,5}((?:TODO|FIXME|HACK|XXX|BUG|TEMP)\b[^\n]{0,150})"),
+        1,
+    ),
+    (
+        "dev_comment",
+        re.compile(
+            # Sin "password": los comentarios de validación de formularios lo
+            # mencionan todo el rato. Esto busca intenciones, no campos.
+            r"(?i)(?<![:\w\"'\\/])//([^\n]{0,80}\b(?:hardcode\w{0,3}|bypass"
+            r"|backdoor|temporal|no usar|insecure|inseguro|quitar|remove before)\b[^\n]{0,80})"
+        ),
+        1,
+    ),
+    # Hosts internos o de pre-producción referenciados desde el frontend.
+    (
+        "internal_host",
+        re.compile(
+            r"\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+            r"|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})"
+            r"(?::\d{2,5})?\b"
+        ),
+        0,
+    ),
+    (
+        "internal_host",
+        re.compile(
+            r"(?i)\bhttps?://((?:dev|staging|stg|test|qa|uat|preprod|sandbox|internal|intranet)"
+            r"[\w-]{0,20}\.[\w.-]{2,100})"
+        ),
+        1,
+    ),
+    (
+        "internal_host",
+        re.compile(
+            r"""["'`/@]([\w-]{1,60}(?:\.[\w-]{1,60}){0,4}\.(?:local|internal|corp|lan))(?![\w.-])"""
+        ),
+        1,
+    ),
+]
+
+# --- Comparaciones y asignaciones: una sola pasada, clasificadas en Python ------
+# POR QUÉ no una regex por tipo: con cuatro patrones del estilo
+# "[\w$.]{0,40}(?:role|admin|...)" el motor prueba cada palabra clave en cada
+# posición de cada identificador, y el extractor iba 3 veces más lento en
+# bundles grandes. Aquí UNA regex encuentra "identificador op valor" y la
+# clasificación por palabra clave se hace sobre el lado izquierdo, ya aislado.
+_TYPEOF = r"(?!(?:string|number|undefined|object|function|boolean|bigint|symbol)[\"'`])"
+COMPARISON_RE = re.compile(
+    rf"""{_ID}(?P<lhs>[\w$.]{{1,80}})\s{{0,3}}(?P<op>[!=]==?|[<>]=?|=(?![=>]))\s{{0,3}}"""
+    rf"""(?P<rhs>Math\.\w{{2,10}}\([^;\n]{{0,100}}|-?\d[\d.]{{0,12}}\b"""
+    rf"""|["'`]{_TYPEOF}(?P<lit>[\w-]{{1,40}})["'`]|true\b|false\b|!0\b|!1\b)"""
+)
+# Palabras clave sobre el lado izquierdo (ya aislado: buscar aquí es barato).
+_PAY_VAR_RE = re.compile(r"(?i)payment|gateway|pago")  # "method" a secas no: method == 'track'
+_ROLE_VAR_RE = re.compile(
+    r"(?i)role|admin|staff|superuser|permission|privilege|access_?level|user_?type"
+    r"|is_?premium|is_?vip|subscription|tier"
+)
+_RULE_VAR_RE = re.compile(
+    r"(?i)price|precio|total|subtotal|amount|importe|fee|discount|descuento|coupon|cupon"
+    r"|promo|voucher|cents|minimum|minimo|stock|quantity|cantidad"
+)
+
+
+def _classify_comparison(m: re.Match[str]) -> list[tuple[str, int | str]]:
+    """Devuelve [(kind, grupo_del_valor)] para una comparación/asignación.
+
+    - client_check: flag de texto comparado con 'true'/'false'
+      (dataset.stripeAvailable === 'true': si el servidor no lo repite, basta
+      con cambiar el atributo en el DOM).
+    - payment_method: variable de pago comparada/asignada a un literal
+      (paymentMethod === 'card'); el valor es el literal.
+    - role_check: autorización decidida en el frontend (role === 'admin').
+    - business_rule: precios, mínimos, envíos, cupones (subtotal >= 2500).
+    """
+    lhs, op, rhs, lit = m["lhs"], m["op"], m["rhs"], m["lit"]
+    is_cmp = op not in ("=", "<", ">", "<=", ">=")
+    is_bool = rhs in ("true", "false", "!0", "!1")
+    out: list[tuple[str, int | str]] = []
+    if is_cmp and lit in ("true", "false"):
+        out.append(("client_check", 0))
+    if lit and _PAY_VAR_RE.search(lhs) and op in ("=", "==", "===", "!=", "!=="):
+        out.append(("payment_method", "lit"))
+    if is_cmp and (lit or is_bool) and _ROLE_VAR_RE.search(lhs):
+        out.append(("role_check", 0))
+    if not is_bool and lit not in ("true", "false") and _RULE_VAR_RE.search(lhs):
+        out.append(("business_rule", 0))
+    return out
+
+
+# --- DOM: sinks y fuentes de XSS en cliente (category "dom") --------------------
+# Un sink (innerHTML, eval...) alimentado por una fuente que controla el
+# atacante (location.hash, document.referrer, postMessage) = posible DOM XSS.
+# Se captura el lado derecho para que cada asignación distinta sea un hallazgo.
+DOM_PATTERNS: list[tuple[str, re.Pattern[str], int]] = [
+    ("dom_sink", re.compile(r"\b(?:innerHTML|outerHTML)\s{0,3}\+?=(?!=)\s{0,3}[^;\n]{1,80}"), 0),
+    ("dom_sink", re.compile(r"\binsertAdjacentHTML\(\s{0,3}[^;\n]{1,80}"), 0),
+    ("dom_sink", re.compile(r"\bdocument\.write(?:ln)?\(\s{0,3}[^;\n]{1,80}"), 0),
+    ("dom_sink", re.compile(r"(?<![\w$.])eval\(\s{0,3}[^;\n]{1,80}"), 0),
+    ("dom_sink", re.compile(r"\bnew Function\(\s{0,3}[^;\n]{0,80}"), 0),
+    ("dom_sink", re.compile(r"\bset(?:Timeout|Interval)\(\s{0,3}[\"'`][^;\n]{0,80}"), 0),
+    ("dom_sink", re.compile(r"\bdangerouslySetInnerHTML\b|\bv-html="), 0),
+    ("dom_sink", re.compile(r"\.html\(\s{0,3}[^)\s][^;\n]{0,80}"), 0),  # jQuery .html(x)
+    # Asignar location: open redirect, o XSS con "javascript:".
+    (
+        "redirect_sink",
+        re.compile(
+            r"\b(?:window\.|document\.)?location(?:\.href)?\s{0,3}=(?!=)\s{0,3}[^;\n]{1,80}"
+        ),
+        0,
+    ),
+    (
+        "dom_source",
+        re.compile(
+            r"\b(?:location\.(?:hash|search)|document\.(?:referrer|URL|documentURI|cookie)"
+            r"|window\.name)\b"
+        ),
+        0,
+    ),
+    ("postmessage", re.compile(r"""addEventListener\(\s{0,3}["'`]message["'`]"""), 0),
+    ("postmessage", re.compile(r"""\.postMessage\([^;\n]{0,150},\s{0,3}["'`]\*["'`]"""), 0),
+]
+
+# Entorno de un hallazgo de lógica: más estricto que _VALUE_TEST_RE (que
+# acepta "latest" como test). Aquí la palabra tiene que ir separada por _ o -.
+_LOGIC_TEST_RE = re.compile(r"(?i)(?:^|[_-])(?:test|sandbox|staging|demo|preprod)(?:$|[_-])")
+_LOGIC_LIVE_RE = re.compile(r"(?i)(?:^|[_-])(?:live|prod|production)(?:$|[_-])")
+_LOGIC_ENV_KINDS = {"payment_method", "test_mode"}
+
+
+def _logic_env(kind: str, value: str) -> str:
+    """'stripe_test' -> "test". Para la lógica, "test" NO rebaja el riesgo:
+    un método de pago de test aceptado en producción permite pedir sin pagar."""
+    if kind not in _LOGIC_ENV_KINDS:
+        return ""
+    if _LOGIC_TEST_RE.search(value):
+        return "test"
+    if _LOGIC_LIVE_RE.search(value):
+        return "live"
+    return ""
+
 
 def shannon_entropy(s: str) -> float:
     """Bits de información por carácter.
@@ -241,7 +430,7 @@ def extract(text: str, source: str = "<memory>") -> list[Finding]:
     findings: list[Finding] = []
     seen: set[tuple[str, str]] = set()
 
-    def add(category: str, kind: str, m: re.Match[str], group: int) -> None:
+    def add(category: str, kind: str, m: re.Match[str], group: int | str) -> None:
         value = m.group(group)
         key = (kind, value)
         if key in seen:  # el mismo secreto repetido 30 veces es 1 hallazgo
@@ -250,8 +439,13 @@ def extract(text: str, source: str = "<memory>") -> list[Finding]:
         start, end = m.span(group)
         line = bisect_right(newlines, start) + 1
         snippet = _snippet(text, start, end)
-        # Solo los secretos tienen entorno; el contexto se mira sobre el snippet.
-        env = classify_env(kind, value, snippet) if category == "secret" else ""
+        # Entorno: secretos (por clave y contexto) y pagos/modos de la lógica.
+        if category == "secret":
+            env = classify_env(kind, value, snippet)
+        elif category == "logic":
+            env = _logic_env(kind, value)
+        else:
+            env = ""
         findings.append(Finding(category, kind, value, source, line, snippet, env))
 
     for kind, pattern, group in SECRET_PATTERNS:
@@ -264,9 +458,24 @@ def extract(text: str, source: str = "<memory>") -> list[Finding]:
             continue  # descartado aquí = tokens que no pagas después
         add("secret", "generic_secret", m, 1)
 
+    for kind, pattern, group in LOGIC_PATTERNS:
+        for m in pattern.finditer(text):
+            # 'stripe_test' ya sale como payment_method: no repetirlo como test_mode.
+            if kind == "test_mode" and ("payment_method", m.group(group)) in seen:
+                continue
+            add("logic", kind, m, group)
+
+    for m in COMPARISON_RE.finditer(text):
+        for kind, group in _classify_comparison(m):
+            add("logic", kind, m, group)
+
     for kind, pattern, group in VERSION_PATTERNS:
         for m in pattern.finditer(text):
             add("version", kind, m, group)
+
+    for kind, pattern, group in DOM_PATTERNS:
+        for m in pattern.finditer(text):
+            add("dom", kind, m, group)
 
     for m in ENDPOINT_RE.finditer(text):
         value = m.group(1)
@@ -274,7 +483,7 @@ def extract(text: str, source: str = "<memory>") -> list[Finding]:
             kind = "endpoint_url" if value.startswith("http") else "endpoint_path"
             add("endpoint", kind, m, 1)
 
-    # Orden de prioridad para el recorte: secretos > versiones > endpoints.
-    rank = {"secret": 0, "version": 1, "endpoint": 2}
+    # Orden de prioridad para el recorte: secretos > lógica > versiones > DOM > endpoints.
+    rank = {"secret": 0, "logic": 1, "version": 2, "dom": 3, "endpoint": 4}
     findings.sort(key=lambda f: rank.get(f.category, 3))
     return findings[:MAX_FINDINGS_PER_FILE]

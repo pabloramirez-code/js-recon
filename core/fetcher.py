@@ -87,9 +87,54 @@ def in_scope(url: str, target_host: str) -> bool:
     """Mismo host exacto (incluido el puerto). Subdominios NO cuentan.
 
     POR QUÉ tan estricto: "app.ejemplo.com" en scope no implica que
-    "cdn.ejemplo.com" lo esté. Si lo está, usa --include-third-party.
+    "cdn.ejemplo.com" lo esté. Si lo está, usa --scope-subdomains o --allow-host.
     """
     return urlparse(url).netloc.lower() == target_host.lower()
+
+
+@dataclass(frozen=True)
+class Scope:
+    """Qué hosts se pueden analizar. Por defecto, solo el host exacto.
+
+    Ampliarlo es SIEMPRE explícito (un flag por cada relajación), porque en un
+    pentest cada host extra tiene que estar en la autorización por escrito.
+    """
+
+    target_host: str  # netloc de la URL objetivo (host[:puerto])
+    allow_hosts: frozenset[str] = frozenset()  # --allow-host (sin puerto o con él)
+    subdomains: bool = False  # --scope-subdomains
+    third_party: bool = False  # --include-third-party: todo vale
+
+    def allows(self, url: str) -> bool:
+        if self.third_party or in_scope(url, self.target_host):
+            return True
+        parsed = urlparse(url)
+        netloc, host = parsed.netloc.lower(), (parsed.hostname or "").lower()
+        if netloc in self.allow_hosts or host in self.allow_hosts:
+            return True
+        if self.subdomains:
+            # "www.tienda.com" -> se aceptan tienda.com y *.tienda.com. Quitar
+            # el "www." es lo que hace útil el flag: los CDN cuelgan del
+            # dominio base (cdn.tienda.com), no de www.
+            base = (urlparse(f"//{self.target_host}").hostname or "").lower()
+            base = base.removeprefix("www.")
+            return host == base or host.endswith("." + base)
+        return False
+
+
+def make_scope(
+    url: str,
+    *,
+    include_third_party: bool = False,
+    allow_hosts: list[str] | None = None,
+    subdomains: bool = False,
+) -> Scope:
+    return Scope(
+        target_host=urlparse(url).netloc,
+        allow_hosts=frozenset(h.strip().lower() for h in allow_hosts or [] if h.strip()),
+        subdomains=subdomains,
+        third_party=include_third_party,
+    )
 
 
 def _get(session: requests.Session, url: str) -> tuple[str, str]:
@@ -138,12 +183,20 @@ def fetch_target(
     url: str,
     *,
     include_third_party: bool = False,
+    allow_hosts: list[str] | None = None,
+    scope_subdomains: bool = False,
     verify_tls: bool = True,
     max_js: int = MAX_JS_FILES,
 ) -> FetchResult:
     """Descarga la página y sus scripts. Nunca lanza por errores de red."""
     url = validate_target(url)
     target_host = urlparse(url).netloc
+    scope = make_scope(
+        url,
+        include_third_party=include_third_party,
+        allow_hosts=allow_hosts,
+        subdomains=scope_subdomains,
+    )
     result = FetchResult(page_url=url)
 
     # Session: reutiliza la conexión TCP/TLS entre peticiones (más rápido y
@@ -175,7 +228,7 @@ def fetch_target(
         for js_url in candidates:
             if urlparse(js_url).scheme not in ("http", "https"):
                 continue  # data:, blob:, javascript: -> no son descargables
-            if not include_third_party and not in_scope(js_url, target_host):
+            if not scope.allows(js_url):
                 result.out_of_scope.append(js_url)
                 log.debug("Fuera de scope, omitido: %s", js_url)
                 continue
@@ -188,7 +241,7 @@ def fetch_target(
             if got is None:
                 continue
             final_js_url, code = got
-            if not include_third_party and not in_scope(final_js_url, target_host):
+            if not scope.allows(final_js_url):
                 # El .js estaba en scope pero redirigió a otro host: descartar.
                 result.out_of_scope.append(final_js_url)
                 continue

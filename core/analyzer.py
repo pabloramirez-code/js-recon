@@ -61,11 +61,21 @@ Tareas:
    Indica severidad (alta/media/baja/info) y cómo VERIFICARLO de forma segura y no destructiva.
 2. Endpoints: agrupa por función (auth, admin, API interna, debug, terceros...) y
    destaca los que merecen prueba manual y por qué (IDOR, auth rota, info expuesta...).
-3. Versiones/tecnologías ([version]): para cada librería con versión, di si esa versión
+3. Lógica de negocio ([logic:...]): métodos de pago (payment_method; uno con env=test
+   como "stripe_test" en la web real es ALTO: podría permitir pedir sin pagar de verdad),
+   flags y comprobaciones que solo hace el cliente (client_check, role_check, debug_flag),
+   reglas de precio/mínimos/envío/cupones (business_rule), parámetros (request_param,
+   url_param), comentarios (dev_comment) y hosts internos (internal_host). Para cada uno,
+   di qué manipular en la petición (p. ej. con Burp) para comprobar si el SERVIDOR repite
+   la validación, sin completar pagos reales ni causar daños.
+4. DOM ([dom:...]): sinks (innerHTML, eval, document.write, location=...) y fuentes
+   (location.hash/search, document.referrer, postMessage). Indica qué combinación
+   fuente->sink parece explotable (DOM XSS, open redirect) y cómo confirmarlo.
+5. Versiones/tecnologías ([version]): para cada librería con versión, di si esa versión
    tiene CVEs conocidos relevantes (p. ej. jQuery < 3.5 = XSS) y cómo confirmarlo; marca
    los source maps (.map) expuestos como fuga de código fuente. Si no conoces un CVE
    concreto, dilo en vez de inventarlo.
-4. Termina con una lista priorizada de los 5 siguientes pasos.
+6. Termina con una lista priorizada de los 5 siguientes pasos.
 
 Los secretos llegan enmascarados (****): razona por el prefijo, la longitud y el contexto.
 Sé conciso. Responde en español y en Markdown."""
@@ -127,6 +137,11 @@ def _finding_line(f: Finding, mask: bool, secret_values: list[str]) -> str:
         return f"[version:{f.kind}] {f.value} ({f.source})"
     # env= solo si se conoce: ahorra tokens y no afirma algo incierto.
     env = f" env={f.env}" if f.env else ""
+    if f.category in ("logic", "dom"):
+        # El contexto es lo que da sentido a la lógica, pero puede contener un
+        # secreto vecino: se sanea igual que el de los secretos.
+        snippet = _sanitize_snippet(f.snippet, secret_values) if mask else f.snippet
+        return f"[{f.category}:{f.kind}{env}] {f.value} ({f.source}:{f.line}) ctx: {snippet}"
     if not mask:
         return f"[secret:{f.kind}{env}] {f.value} ({f.source}:{f.line}) ctx: {f.snippet}"
     snippet = _sanitize_snippet(f.snippet, secret_values)
@@ -137,31 +152,39 @@ def build_payload(findings: list[Finding], mask: bool = MASK_SECRETS) -> tuple[s
     """Construye el texto a enviar respetando el presupuesto de tokens.
 
     Devuelve (payload, nº de hallazgos omitidos). Prioridad: secretos >
-    versiones > URLs absolutas > rutas. La estimación aquí es offline (len/3,
-    conservadora); el recuento exacto se hace después con count_tokens.
+    lógica de negocio > versiones > DOM > URLs absolutas > rutas. La
+    estimación aquí es offline (len/3, conservadora); el recuento exacto se
+    hace después con count_tokens.
     """
-    # 1) Deduplicar endpoints y versiones por valor: la misma librería o ruta
-    #    repetida en 5 ficheros = 1 línea. Los secretos NO se deduplican aquí
+    # 1) Deduplicar todo menos secretos por (tipo, valor): la misma librería,
+    #    ruta o método de pago repetido en 5 ficheros = 1 línea.
+    #    Los secretos NO se deduplican aquí
     #    (ya lo hizo el extractor por fichero y cada ubicación puede importar).
     unique: list[Finding] = []
     seen_values: set[str] = set()
     for f in findings:
-        if f.category in ("endpoint", "version"):
-            if f.value in seen_values:
+        if f.category != "secret":
+            key = f"{f.kind}\0{f.value}"
+            if key in seen_values:
                 continue
-            seen_values.add(f.value)
+            seen_values.add(key)
         unique.append(f)
 
     # 2) Ordenar por prioridad (sorted es estable: respeta el orden original
     #    dentro de cada grupo).
-    priority = {"endpoint_url": 3, "endpoint_path": 4}
+    priority = {"endpoint_url": 5, "endpoint_path": 6}
 
     def rank(f: Finding) -> int:
         if f.category == "secret":
             return 0
+        if f.category == "logic":
+            # Dentro de la lógica, pagos y modos test primero: son lo más grave.
+            return 1 if f.kind in ("payment_method", "test_mode", "debug_flag") else 2
         if f.category == "version":
-            return 1  # versiones justo tras secretos: pocas y de alto valor
-        return priority.get(f.kind, 5)
+            return 3  # pocas y de alto valor
+        if f.category == "dom":
+            return 4
+        return priority.get(f.kind, 7)
 
     unique.sort(key=rank)
 
@@ -319,6 +342,9 @@ Analiza a fondo y reporta solo lo que tenga fundamento en el código:
 - Lógica sensible en cliente: autenticación/autorización, validaciones que se podrían
   saltar, control de acceso basado solo en el frontend, redirecciones abiertas, uso de
   postMessage/CORS, inyecciones DOM (innerHTML, eval, document.write).
+- Lógica de negocio: métodos/pasarelas de pago (¿hay alguno de test o sandbox activo,
+  como "stripe_test"?), precios, mínimos, gastos de envío, descuentos o cupones
+  calculados o validados en el cliente, y flags que habilitan funciones o pagos.
 - Librerías y versiones con CVEs conocidos relevantes (si no conoces el CVE, dilo).
 - Información expuesta: comentarios reveladores, rutas internas, flags de debug.
 

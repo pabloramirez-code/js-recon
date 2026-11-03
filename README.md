@@ -17,6 +17,7 @@ sospechosos a la API de Claude para un análisis razonado.
 2. [Comprobación de scope](#2-comprobación-de-scope)
 3. [Uso rápido](#3-uso-rápido)
 4. [Opciones de la CLI](#4-opciones-de-la-cli)
+4b. [Modo navegador (`--browser`)](#4b-modo-navegador---browser)
 5. [Qué hace por dentro](#5-qué-hace-por-dentro)
 6. [Interpretar los resultados](#6-interpretar-los-resultados)
 7. [Coste de la IA](#7-coste-de-la-ia)
@@ -46,6 +47,13 @@ copy .env.example .env
 notepad .env        # escribe: ANTHROPIC_API_KEY=sk-ant-...
 ```
 
+**Modo navegador (opcional):** instala Playwright solo si vas a usar
+`--browser` (ver §4b). Usa tu Google Chrome instalado, no descarga Chromium:
+
+```powershell
+python -m uv sync --extra browser
+```
+
 > Si `uv` está en tu PATH, puedes escribir `uv` en vez de `python -m uv` en
 > todos los comandos.
 
@@ -57,7 +65,7 @@ Comprobar que todo funciona:
 
 ```powershell
 python -m uv run python main.py --help
-python -m uv run pytest -q          # debe decir "8 passed"
+python -m uv run pytest -q          # todos los tests deben pasar
 ```
 
 ---
@@ -112,9 +120,10 @@ continuar.
 ## 4. Opciones de la CLI
 
 ```
-usage: js-recon [-h] [--no-ai] [--model {haiku,opus}] [--dry-run]
-                [--include-third-party] [--insecure] [--max-js MAX_JS]
-                [-y] [-v] url
+usage: js-recon [-h] [--no-ai] [--deep] [--model {haiku,opus}] [--dry-run]
+                [--include-third-party] [--allow-host HOST]
+                [--scope-subdomains] [--browser] [--fresh-profile]
+                [--insecure] [--max-js MAX_JS] [-y] [-v] url
 ```
 
 | Opción | Para qué sirve |
@@ -124,9 +133,13 @@ usage: js-recon [-h] [--no-ai] [--model {haiku,opus}] [--dry-run]
 | `--deep` | Análisis profundo: manda el **código completo** de los `.js` a la IA (ver §7b). Más caro; pide confirmación de coste. |
 | `--model {haiku,opus}` | Modelo para el análisis. Por defecto `haiku`. |
 | `--dry-run` | Cuenta tokens y estima coste, pero no llama al modelo. |
-| `--include-third-party` | Descarga también JS de otros hosts. Solo si están en scope. |
+| `--include-third-party` | Analiza también JS de **cualquier** otro host. Solo si están en scope. |
+| `--allow-host HOST` | Analiza también los JS de ese host (p. ej. `cdn.tienda.com`). Se puede repetir. |
+| `--scope-subdomains` | Analiza también el dominio base y sus subdominios: con `www.tienda.com` acepta `tienda.com` y `*.tienda.com`. |
+| `--browser` | Abre Chrome, navegas tú y se capturan todos los `.js` que cargue la web (ver §4b). |
+| `--fresh-profile` | Con `--browser`: perfil temporal limpio, sin cookies ni sesiones previas. |
 | `--insecure` | No verifica el certificado TLS (labs autofirmados). |
-| `--max-js MAX_JS` | Máximo de ficheros JS a descargar (por defecto 50). |
+| `--max-js MAX_JS` | Máximo de ficheros JS (por defecto 50; 500 con `--browser`). |
 | `-y`, `--yes` | Confirma el scope sin preguntar. Solo para scripts. |
 | `-v`, `--verbose` | Logs de depuración. |
 
@@ -135,6 +148,49 @@ usage: js-recon [-h] [--no-ai] [--model {haiku,opus}] [--dry-run]
 
 **Código de salida:** `0` todo bien · `1` error en ejecución (red, scope no
 confirmado) · `2` error de uso (URL inválida).
+
+---
+
+## 4b. Modo navegador (`--browser`)
+
+El modo normal solo ve los `<script src>` del HTML inicial. Las tiendas online
+y las SPA cargan la mayoría de su JS **después**: chunks que importan otros
+`.js`, URLs construidas al ejecutar, iframes (checkout, pagos) y secciones que
+solo existen tras iniciar sesión o añadir algo al carrito. En la tienda demo de
+Shopify el modo normal encuentra 17 `.js`; con `--browser`, unos 160 en una
+sola página.
+
+```powershell
+python -m uv run python main.py https://tienda-autorizada.com/ --browser --no-ai
+```
+
+1. Confirmas el scope, como siempre.
+2. Se abre Google Chrome en la URL. **Navega con normalidad**: categorías,
+   productos, buscador, carrito, login, checkout…
+3. En la terminal aparece cada `.js` capturado: `[+] https://... (37 capturados)`.
+4. Cuando termines, **cierra el navegador** (o pulsa Ctrl+C en la terminal).
+   Lo capturado se analiza con el flujo de siempre (`--no-ai`, `--deep`,
+   `--model`... funcionan igual) y se guarda en `output/`.
+
+Cómo funciona y qué tener en cuenta:
+
+- **No lanza peticiones extra**: solo lee lo que Chrome ya descargó por tu
+  navegación. El tráfico es el de una visita normal.
+- **El scope decide qué se analiza**, no qué carga el navegador (una web
+  siempre pedirá su CDN o sus analytics). Lo que queda fuera aparece en
+  `out_of_scope` del informe y no se guarda ni se envía a la IA. Para incluir
+  el CDN de la tienda: `--allow-host cdn.tienda.com` o `--scope-subdomains`.
+- Se guardan los `.js` de todas las pestañas e iframes, y los `<script>`
+  inline de cada página visitada. Se **deduplica por contenido**: el mismo
+  fichero con distinto `?v=123` cuenta una sola vez.
+- **Perfil propio** en `.browser-profile/` (no es tu Chrome personal). Guarda
+  cookies y sesiones, así no tienes que volver a iniciar sesión en la tienda
+  entre escaneos. Está en `.gitignore`; bórralo al acabar el engagement o usa
+  `--fresh-profile` para un perfil temporal que se borra al salir.
+- Si no tienes Google Chrome, usa el Chromium de Playwright:
+  `python -m uv run playwright install chromium`.
+- Algunos antibots detectan el navegador automatizado y muestran un captcha:
+  resuélvelo a mano y sigue navegando.
 
 ---
 
@@ -151,7 +207,9 @@ URL → [fetcher] descarga HTML + JS del mismo host
 ```
 
 1. **fetcher** — Descarga la página y los `<script>` que referencia. Solo del
-   mismo host y puerto (salvo `--include-third-party`). Cada petición tiene
+   mismo host y puerto (salvo `--include-third-party`, `--allow-host` o
+   `--scope-subdomains`). Con `--browser` lo sustituye **browser**, que captura
+   los `.js` que carga Chrome mientras navegas (§4b). Cada petición tiene
    timeout y un límite de 5 MB; un `.js` caído se registra y no detiene el
    resto.
 2. **extractor** — Aplica regex para encontrar claves de AWS/Google/GitHub,
@@ -164,6 +222,27 @@ URL → [fetcher] descarga HTML + JS del mismo host
      `sk_live_` en Stripe, `sandbox_` vs `production_` en Braintree) y, si la
      clave no lo dice, del contexto cercano. Ante la duda se deja en blanco:
      nunca se rebaja la severidad de una clave real por una coincidencia.
+   - **Lógica de negocio** (`logic`): lo que el frontend revela de cómo
+     funciona la tienda y que luego se manipula en la petición (Burp):
+     - `payment_method`: métodos y pasarelas de pago (`'stripe_test'`,
+       `'bizum'`, `'tpv'`, `'cash'`…). Un método de **test** en la web real
+       se marca `🧪 TEST` y sale como aviso en la terminal: puede permitir
+       pedir sin pagar de verdad.
+     - `test_mode` / `debug_flag`: modos test, sandbox, staging o debug
+       (`'preprod'`, `debug: true`).
+     - `client_check`: bloqueos que solo hace el navegador
+       (`form.dataset.stripeAvailable === 'true'`).
+     - `role_check`: autorización en el frontend (`role === 'admin'`).
+     - `business_rule`: precios, mínimos, gastos de envío, cupones
+       (`subtotal >= 2500`, `coupon == 'BLACKFRIDAY50'`).
+     - `request_param` / `url_param`: parámetros que envía o lee el cliente
+       (`_csrf`, `searchParams.get('redirect')`).
+     - `dev_comment` (`// TODO`, `// temporal: bypass…`) e `internal_host`
+       (`localhost`, IPs privadas, `staging-api.…`, `*.internal`).
+   - **DOM** (`dom`): sinks de XSS (`innerHTML =`, `eval(`,
+     `document.write(`), redirecciones (`location.href =`), fuentes que
+     controla el atacante (`location.hash`, `document.referrer`) y
+     `postMessage`. Un sink alimentado por una fuente = posible DOM XSS.
    - **Versiones:** librerías servidas por CDN con versión (`vue@2.6.14`),
      banners (`jQuery v1.8.2`), versiones declaradas y source maps (`.map`)
      expuestos. Sirve para cruzar con CVEs conocidos.
@@ -181,7 +260,8 @@ URL → [fetcher] descarga HTML + JS del mismo host
 Cada ejecución crea `output/<host>_<fecha>/` con:
 
 - **`report.md`** — Informe legible: secretos (enmascarados, con 🔴 LIVE /
-  🟢 test), versiones detectadas, endpoints y, si usaste IA, el análisis
+  🟢 test), lógica de negocio (con 🧪 TEST en pagos de prueba), sinks y
+  fuentes DOM, versiones detectadas, endpoints y, si usaste IA, el análisis
   razonado con su coste.
 - **`report.json`** — Los mismos datos en formato máquina, para encadenar con
   otras herramientas.
@@ -283,6 +363,9 @@ Todos los valores ajustables están en `config.py`:
 | `MAX_INPUT_TOKENS` | Presupuesto de entrada; si se supera, se envían los más prioritarios y se avisa. |
 | `MAX_OUTPUT_TOKENS` | Tope de la respuesta del modelo. |
 | `MAX_JS_FILES` | Máximo de `.js` por escaneo. |
+| `BROWSER_MAX_JS_FILES` | (modo `--browser`) Máximo de `.js` capturados por sesión. |
+| `BROWSER_PROFILE_DIR` | (modo `--browser`) Carpeta del perfil persistente de Chrome. |
+| `BROWSER_CHANNEL` | (modo `--browser`) `"chrome"` usa tu Google Chrome; `None`, el Chromium de Playwright. |
 | `MAX_RESPONSE_BYTES` | Tamaño máximo por respuesta (protege la memoria). |
 | `REQUEST_TIMEOUT` | `(conexión, lectura)` en segundos. |
 | `GENERIC_SECRET_MIN_ENTROPY` | Umbral de entropía para aceptar un secreto genérico. |
@@ -306,10 +389,10 @@ python -m uv run python main.py https://mi-lab.local/ --no-ai -v
 python -m uv run python main.py https://mi-lab.local/ --dry-run
 ```
 
-**SPA con muchos chunks, incluyendo su CDN (si está en scope):**
+**Tienda online / SPA con muchos chunks, incluyendo su CDN (si está en scope):**
 
 ```powershell
-python -m uv run python main.py https://mi-lab.local/ --include-third-party --max-js 100 --no-ai
+python -m uv run python main.py https://tienda.local/ --browser --scope-subdomains --no-ai
 ```
 
 **Análisis de los hallazgos del pre-filtro con Opus:**
@@ -337,6 +420,10 @@ python -m uv run python main.py https://mi-lab.local/ --deep --model opus  # má
 | Errores de TLS en un lab | Certificado autofirmado: añade `--insecure`. |
 | `No se pudo descargar la página objetivo` | Host caído, DNS, firewall o fuera de línea. Revisa con `-v`. |
 | `anthropic could not be resolved` en VS Code | Selecciona el intérprete `.venv\Scripts\python.exe`. |
+| `Playwright no está instalado` | Falta el extra: `python -m uv sync --extra browser`. |
+| `No se pudo abrir Google Chrome` | No hay Chrome instalado: `python -m uv run playwright install chromium`. |
+| `No se capturó ningún .js dentro del scope` | La web carga todo desde otro host (CDN): añade `--allow-host` o `--scope-subdomains`. |
+| `No resource with given identifier` en errores | Chrome descartó el cuerpo de un chunk precargado antes de leerlo. Es raro y no detiene la captura. |
 | Acentos raros en la consola | Cosmético. El `report.md` en disco está en UTF-8 correcto. |
 
 ---
@@ -344,13 +431,19 @@ python -m uv run python main.py https://mi-lab.local/ --deep --model opus  # má
 ## 11. Limitaciones conocidas
 
 - **JS cargado dinámicamente** (imports que se resuelven en tiempo de
-  ejecución, WebAssembly) puede no aparecer: solo se leen los `<script>` del
-  HTML inicial.
+  ejecución, WebAssembly) no aparece en el modo normal: solo se leen los
+  `<script>` del HTML inicial. Usa `--browser` (§4b). Aun así, el navegador
+  solo ve el JS de las secciones que **visites**.
+- La lógica de negocio y los sinks DOM son **pistas**, no vulnerabilidades:
+  que el cliente compruebe `subtotal >= 2500` solo importa si el servidor
+  **no** lo repite. Verifícalo modificando la petición, sin completar pagos
+  reales. En código minificado los nombres cambian (`t.a === "x"`) y se
+  detecta menos que en código legible.
 - El pre-filtro busca **patrones conocidos**. Un secreto con un formato
   inusual puede escaparse; un valor con pinta de clave puede ser un falso
   positivo.
-- No ejecuta JavaScript ni rastrea enlaces: analiza una sola página por
-  ejecución.
+- El modo normal no ejecuta JavaScript ni rastrea enlaces: analiza una sola
+  página por ejecución.
 - El enmascarado reduce la exposición de secretos, pero el análisis con IA
   sigue enviando contexto a un servicio externo. Si el engagement lo prohíbe,
   usa `--no-ai`.
@@ -379,12 +472,16 @@ js-recon/
 ├── config.py          toda la configuración ajustable
 ├── core/
 │   ├── fetcher.py     descarga HTML y JS (scope, timeouts, errores)
+│   ├── browser.py     modo --browser: captura los JS mientras navegas
 │   ├── extractor.py   regex: endpoints y secretos (pre-filtro)
 │   └── analyzer.py    análisis opcional con Claude
 ├── utils/
 │   └── io.py          logging con colores y guardado de informes
 ├── tests/
-│   └── test_extractor.py
+│   ├── test_extractor.py
+│   ├── test_deep.py
+│   ├── test_browser.py
+│   └── test_logic.py
 ├── output/            resultados (en .gitignore)
 └── .env               API key (en .gitignore)
 ```

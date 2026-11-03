@@ -17,3 +17,6 @@ output/
 
 # Caché de hypothesis (base de datos de ejemplos fallidos, local).
 .hypothesis/
+
+# Perfil del navegador de --browser: cookies y sesiones del objetivo.
+.browser-profile/
