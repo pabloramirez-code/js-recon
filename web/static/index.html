@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>js-recon</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%231a1a17'/%3E%3Cpath d='M4 4v6a2 2 0 0 1-2 2M9 11.5c.5.5 1.2.5 2 .5 1.2 0 2-.6 2-1.6S12 9 11 8.6 9.3 7.6 9.3 6.5 10 5 11 5c.7 0 1.3.2 1.7.6' stroke='%23f1eee6' stroke-width='1.4' fill='none'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="masthead">
+  <div class="brand">
+    <span class="wordmark">js-recon</span>
+    <span class="tagline">reconocimiento de JavaScript &middot; solo objetivos autorizados</span>
+  </div>
+  <ul class="status" id="status" aria-label="Estado del entorno"></ul>
+</header>
+
+<main class="layout">
+  <!-- ========== PANEL DE ESCANEO ========== -->
+  <form class="panel" id="scan-form" novalidate autocomplete="off">
+    <h2 class="panel-title">Nuevo escaneo</h2>
+
+    <fieldset class="sec">
+      <legend><span class="num">01</span> Objetivo</legend>
+      <label class="field">
+        <span class="lbl">URL</span>
+        <input type="url" name="url" id="f-url" placeholder="https://mi-lab.local/" required spellcheck="false">
+      </label>
+      <label class="check check-scope">
+        <input type="checkbox" name="scope_confirmed" id="f-scope">
+        <span class="box" aria-hidden="true"></span>
+        <span>Este host <b>exacto</b> (y puerto) está dentro del scope autorizado por escrito.</span>
+      </label>
+    </fieldset>
+
+    <fieldset class="sec">
+      <legend><span class="num">02</span> Captura</legend>
+      <div class="seg" role="radiogroup" aria-label="Modo de captura">
+        <label><input type="radio" name="capture" value="direct" checked><span>Petición directa<small>descarga la página y sus &lt;script&gt;</small></span></label>
+        <label id="opt-browser"><input type="radio" name="capture" value="browser"><span>Navegador<small>navegas tú en Chrome; se captura todo</small></span></label>
+      </div>
+      <p class="note" id="browser-note" hidden></p>
+      <label class="check" id="row-fresh" hidden>
+        <input type="checkbox" name="fresh_profile"><span class="box" aria-hidden="true"></span>
+        <span>Perfil limpio <em>sin cookies ni sesiones previas</em></span>
+      </label>
+    </fieldset>
+
+    <fieldset class="sec">
+      <legend><span class="num">03</span> Alcance</legend>
+      <label class="check">
+        <input type="checkbox" name="scope_subdomains"><span class="box" aria-hidden="true"></span>
+        <span>Subdominios <em>dominio base y *.dominio</em></span>
+      </label>
+      <label class="check">
+        <input type="checkbox" name="include_third_party" id="f-third"><span class="box" aria-hidden="true"></span>
+        <span>Terceros <em>JS de cualquier host &mdash; CDNs incluidos</em></span>
+      </label>
+      <p class="note warn" id="third-warn" hidden>Los CDNs y analytics casi nunca están en scope. Actívalo solo si lo están.</p>
+      <div class="field">
+        <span class="lbl">Hosts adicionales</span>
+        <div class="chips" id="hosts">
+          <input type="text" id="f-host" placeholder="cdn.ejemplo.com + Enter" spellcheck="false">
+        </div>
+      </div>
+      <div class="row2">
+        <label class="field">
+          <span class="lbl">Máx. ficheros JS</span>
+          <input type="number" name="max_js" id="f-maxjs" min="1" max="5000" inputmode="numeric">
+        </label>
+        <label class="check check-inline">
+          <input type="checkbox" name="insecure"><span class="box" aria-hidden="true"></span>
+          <span>No verificar TLS <em>labs autofirmados</em></span>
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset class="sec">
+      <legend><span class="num">04</span> Análisis</legend>
+      <div class="seg seg3" role="radiogroup" aria-label="Tipo de análisis">
+        <label><input type="radio" name="mode" value="noai" checked><span>Solo regex<small>local &middot; coste 0</small></span></label>
+        <label><input type="radio" name="mode" value="ai"><span>IA<small>hallazgos filtrados</small></span></label>
+        <label><input type="radio" name="mode" value="deep"><span>IA profunda<small>código completo</small></span></label>
+      </div>
+      <div id="ai-opts" hidden>
+        <p class="note warn" id="nokey" hidden>No hay <code>ANTHROPIC_API_KEY</code> configurada: el análisis con IA fallará.</p>
+        <div class="field">
+          <span class="lbl">Modelo</span>
+          <div class="seg seg-models" id="models" role="radiogroup" aria-label="Modelo"></div>
+        </div>
+        <label class="check">
+          <input type="checkbox" name="dry_run"><span class="box" aria-hidden="true"></span>
+          <span>Solo estimar coste <em>cuenta tokens, no llama al modelo</em></span>
+        </label>
+        <label class="check" id="row-cost" hidden>
+          <input type="checkbox" name="accept_cost"><span class="box" aria-hidden="true"></span>
+          <span>Acepto el coste del modo profundo <em>si no, se cancela al estimarlo</em></span>
+        </label>
+      </div>
+    </fieldset>
+
+    <div class="cli">
+      <div class="cli-head"><span>Equivalente en CLI</span><button type="button" class="link" id="copy-cli">copiar</button></div>
+      <code id="cli"></code>
+    </div>
+
+    <p class="form-error" id="form-error" role="alert" hidden></p>
+    <button type="submit" class="btn-primary" id="launch">Lanzar escaneo <span aria-hidden="true">&rarr;</span></button>
+  </form>
+
+  <!-- ========== ESCENARIO ========== -->
+  <section class="stage">
+    <nav class="stage-nav" aria-label="Vistas">
+      <button type="button" data-view="report" id="nav-report" class="on">Informe</button>
+      <button type="button" data-view="history" id="nav-history">Archivo <span class="count" id="hist-count"></span></button>
+    </nav>
+
+    <!-- vacío -->
+    <div class="view" id="view-empty">
+      <div class="empty">
+        <p class="empty-big">Sin informe abierto.</p>
+        <p>Lanza un escaneo desde el panel o abre uno anterior desde el <button type="button" class="link" data-view="history">archivo</button>.</p>
+        <ol class="howto">
+          <li>Empieza siempre por <b>solo regex</b>: es local y gratis.</li>
+          <li>Si hay algo interesante, repite con <b>IA</b> o <b>IA profunda</b>.</li>
+          <li>Busca con <kbd>/</kbd> en todas las categorías a la vez.</li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- en curso -->
+    <div class="view" id="view-running" hidden>
+      <div class="run-head">
+        <div>
+          <p class="eyebrow">Escaneando</p>
+          <h1 class="target" id="run-target"></h1>
+        </div>
+        <p class="clock" id="run-clock">00:00</p>
+      </div>
+      <p class="banner" id="run-browser" hidden>Se ha abierto Chrome. Navega por la web objetivo y <b>cierra el navegador</b> cuando termines: entonces se analiza lo capturado.</p>
+      <div class="console" id="console" aria-live="polite"></div>
+    </div>
+
+    <!-- informe -->
+    <div class="view" id="view-report" hidden>
+      <div class="rep-head">
+        <div class="rep-title">
+          <p class="eyebrow" id="rep-date"></p>
+          <h1 class="target" id="rep-target"></h1>
+          <p class="rep-meta" id="rep-meta"></p>
+        </div>
+        <div class="rep-actions">
+          <a class="btn" id="dl-json" download>JSON</a>
+          <a class="btn" id="dl-md" download>Markdown</a>
+        </div>
+      </div>
+
+      <div class="tally" id="tally"></div>
+
+      <div class="toolbar">
+        <label class="search">
+          <span class="sr">Buscar</span>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.5" cy="6.5" r="4.5"/><path d="M10 10l4.5 4.5"/></svg>
+          <input type="search" id="q" placeholder="Buscar en valores, tipos, ficheros y contexto" spellcheck="false">
+          <kbd>/</kbd>
+        </label>
+        <div class="filters" role="group" aria-label="Filtro por entorno">
+          <button type="button" data-env="all" class="on">Todo</button>
+          <button type="button" data-env="live">Live</button>
+          <button type="button" data-env="test">Test</button>
+          <button type="button" data-env="none">Sin clasificar</button>
+        </div>
+        <label class="check check-inline compact">
+          <input type="checkbox" id="reveal"><span class="box" aria-hidden="true"></span>
+          <span>Mostrar secretos completos</span>
+        </label>
+      </div>
+
+      <nav class="tabs" id="tabs" role="tablist"></nav>
+      <div id="panel" class="panel-body"></div>
+    </div>
+
+    <!-- archivo -->
+    <div class="view" id="view-history" hidden>
+      <div class="hist-head">
+        <h2 class="h2">Archivo de informes</h2>
+        <label class="search small">
+          <span class="sr">Filtrar informes</span>
+          <input type="search" id="hq" placeholder="Filtrar por objetivo" spellcheck="false">
+        </label>
+      </div>
+      <div id="history"></div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast" role="status" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

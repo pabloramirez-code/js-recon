@@ -26,6 +26,7 @@ sospechosos a la API de Claude para un análisis razonado.
 10. [Solución de problemas](#10-solución-de-problemas)
 11. [Limitaciones conocidas](#11-limitaciones-conocidas)
 12. [Tests y desarrollo](#12-tests-y-desarrollo)
+13. [Interfaz web y Docker](#13-interfaz-web-y-docker)
 
 ---
 
@@ -485,3 +486,50 @@ js-recon/
 ├── output/            resultados (en .gitignore)
 └── .env               API key (en .gitignore)
 ```
+
+---
+
+## 13. Interfaz web y Docker
+
+Interfaz visual con todas las opciones de la CLI, resultados separados por
+tipo (secretos, lógica, DOM, versiones, endpoints, análisis IA, ficheros) y
+búsqueda en todas las categorías a la vez (`/` para enfocar el buscador).
+Usa exactamente el mismo pipeline que la CLI (`core/scan.py`) y guarda los
+informes en el mismo `output/`, así que también puedes abrir escaneos hechos
+desde la terminal en la pestaña **Archivo**.
+
+**Con Docker** (recomendado):
+
+```powershell
+docker compose up --build -d      # http://localhost:8000
+docker compose logs -f            # ver logs
+docker compose down               # parar
+```
+
+- La API key se lee de `.env` si existe (si no, solo modo regex).
+- Los informes quedan en `./output` de tu equipo (volumen).
+- Otro puerto: `$env:JSRECON_PORT=9000; docker compose up -d`.
+- El modo **Navegador** no está disponible en Docker: necesita abrir un
+  Chrome visible en tu escritorio. Para eso, arranca la web en local.
+
+**En local** (sin Docker):
+
+```powershell
+python -m uv sync --extra web                 # añade --extra browser para el modo Navegador
+python -m uv run python -m web.app            # http://127.0.0.1:8000
+```
+
+**Seguridad de la interfaz:** no tiene login, así que solo escucha en
+localhost (en Docker el puerto se publica en `127.0.0.1`). Rechaza peticiones
+con una cabecera `Host` distinta de localhost (anti DNS rebinding; amplíala con
+`JSRECON_ALLOWED_HOSTS`), exige JSON en los POST, solo permite un escaneo a la
+vez y exige marcar la confirmación de scope en cada lanzamiento. Los secretos
+se muestran enmascarados (también dentro del contexto) hasta que marcas
+«Mostrar secretos completos».
+
+| Variable | Por defecto | Para qué |
+|---|---|---|
+| `JSRECON_HOST` | `127.0.0.1` (`0.0.0.0` en Docker) | Interfaz de escucha |
+| `JSRECON_PORT` | `8000` | Puerto |
+| `JSRECON_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1]` | Valores aceptados en la cabecera `Host` |
+| `JSRECON_VERBOSE` | — | `1` para logs de depuración |

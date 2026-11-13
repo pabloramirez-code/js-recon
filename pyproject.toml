@@ -15,6 +15,11 @@ dependencies = [
 browser = [
     "playwright>=1.64.1",
 ]
+# Interfaz web (python -m uv sync --extra web; ver README §13).
+web = [
+    "flask>=3.1",
+    "waitress>=3.0",
+]
 
 [dependency-groups]
 dev = [

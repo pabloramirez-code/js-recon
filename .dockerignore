@@ -1,0 +1,11 @@
+.git
+.venv
+.env
+output
+.browser-profile
+.hypothesis
+.pytest_cache
+.ruff_cache
+**/__pycache__
+tests
+*.md

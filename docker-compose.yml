@@ -1,0 +1,17 @@
+services:
+  js-recon:
+    build: .
+    image: js-recon:latest
+    container_name: js-recon
+    # Solo en tu máquina: la interfaz no tiene login. No cambies 127.0.0.1
+    # por 0.0.0.0 salvo que sepas lo que haces (y ajusta JSRECON_ALLOWED_HOSTS).
+    ports:
+      - "127.0.0.1:${JSRECON_PORT:-8000}:8000"
+    # ANTHROPIC_API_KEY sale de .env (opcional: sin él, solo modo regex).
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      # Informes y JS descargados quedan en tu disco, igual que con la CLI.
+      - ./output:/app/output
+    restart: unless-stopped
